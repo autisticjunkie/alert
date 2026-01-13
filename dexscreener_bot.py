@@ -57,6 +57,12 @@ seen_boosts: Dict[str, float] = {}  # token_address -> totalAmount
 seen_orders: Dict[str, int] = {}  # token_address -> latest_payment_timestamp
 seen_profiles: Set[tuple] = set()  # (chain_id, token_address)
 
+# Store higher-resolution header images for profiles when available
+profile_headers: Dict[tuple, str] = {}  # (chain_id, token_address) -> header URL
+
+# Store social links for profiles
+profile_socials: Dict[tuple, list] = {}  # (chain_id, token_address) -> list of social links
+
 # Track all known tokens to check for orders
 known_tokens: Set[tuple] = set()  # (chain_id, token_address)
 
@@ -217,6 +223,26 @@ def format_telegram_alert(event_type: str, token_info: dict, chain_id: str, toke
         lines.append("")
         lines.append(f"📄 Description: {extra_info['description'][:200]}")
     
+    # Add social links if available
+    if 'social_links' in extra_info and extra_info['social_links']:
+        lines.append("")
+        lines.append("🔗 <b>Socials:</b>")
+        for link in extra_info['social_links'][:5]:  # Limit to 5 links
+            link_type = link.get('type', 'link')
+            link_url = link.get('url', '')
+            if link_url:
+                # Use appropriate emoji for each social type
+                emoji_map = {
+                    'twitter': '𝕏',
+                    'telegram': '✈️',
+                    'discord': '💬',
+                    'website': '🌐',
+                    'reddit': '🔴'
+                }
+                emoji = emoji_map.get(link_type.lower(), '🔗')
+                label = link.get('label', link_type.title())
+                lines.append(f"  {emoji} <a href='{link_url}'>{label}</a>")
+    
     lines.append("")
     
     # Contract address (copyable)
@@ -231,10 +257,25 @@ def format_telegram_alert(event_type: str, token_info: dict, chain_id: str, toke
     
     message = "\n".join(lines)
     
-    # Generate chart image URL
-    chart_url = f"https://dd.dexscreener.com/ds-data/tokens/{chain_id}/{token_address}.png"
+    # Image priority: stored profile image > full chart > thumbnail
+    image_url = None
     
-    return message, chart_url
+    # First try: high-res image from profile (openGraph/header/icon)
+    if extra_info and isinstance(extra_info, dict):
+        image_url = extra_info.get("header_image")
+    
+    # Second try: full-size chart (much better than thumbnail)
+    if not image_url:
+        # Try to get a full-size chart image
+        image_url = f"https://api.dexscreener.com/token-chart-img/{chain_id}/{token_address}"
+        # Add size parameters for better quality
+        image_url += "?w=800&h=450"
+    
+    # Last resort: small thumbnail (will be blurry)
+    if not image_url:
+        image_url = f"https://dd.dexscreener.com/ds-data/tokens/{chain_id}/{token_address}.png"
+    
+    return message, image_url
 
 
 def print_alert(title: str, lines: list, emoji: str = "🚨") -> None:
@@ -294,6 +335,18 @@ def print_alert(title: str, lines: list, emoji: str = "🚨") -> None:
                 extra_info['date'] = line.replace("Started: ", "").strip()
             elif line.startswith("URL:"):
                 extra_info['url'] = line.replace("URL: ", "").strip()
+
+        # Attach header image from stored profile data, if available
+        if chain_id and token_address:
+            key = (chain_id, token_address)
+            header_img = profile_headers.get(key)
+            if header_img:
+                extra_info["header_image"] = header_img
+            
+            # Attach social links if available
+            social_links = profile_socials.get(key)
+            if social_links:
+                extra_info["social_links"] = social_links
         
         # Determine event type from title
         event_type = "ALERT"
@@ -361,7 +414,7 @@ def process_ads(ads: Any) -> None:
 
 def process_profiles(profiles: Any) -> None:
     """Process token profiles from /token-profiles/latest/v1"""
-    global seen_profiles, known_tokens
+    global seen_profiles, known_tokens, profile_headers, profile_socials
     
     if not isinstance(profiles, list):
         return
@@ -377,6 +430,23 @@ def process_profiles(profiles: Any) -> None:
         
         # Track this token for order checking
         known_tokens.add(key)
+        
+        # Store high-resolution images from profile
+        # Priority: openGraph > header > icon
+        image_url = None
+        if profile.get("openGraph"):
+            image_url = profile.get("openGraph")
+        elif profile.get("header"):
+            image_url = profile.get("header")
+        elif profile.get("icon"):
+            image_url = profile.get("icon")
+        
+        if image_url:
+            profile_headers[key] = image_url
+        
+        # Store social links if available
+        if profile.get("links"):
+            profile_socials[key] = profile.get("links")
         
         # Check if this is a new profile
         if key in seen_profiles:
@@ -409,7 +479,7 @@ def process_profiles(profiles: Any) -> None:
 
 def process_boosts(boosts: Any) -> None:
     """Process token boosts"""
-    global seen_boosts
+    global seen_boosts, profile_headers
     
     if not isinstance(boosts, list):
         return
@@ -423,7 +493,8 @@ def process_boosts(boosts: Any) -> None:
             continue
         
         # Track token for order checking
-        known_tokens.add((chain_id, token_address))
+        key = (chain_id, token_address)
+        known_tokens.add(key)
         
         previous_amount = seen_boosts.get(token_address, 0)
         
@@ -534,16 +605,34 @@ def initialize():
                 known_tokens.add((chain_id, token_address))
         print(f"✅ Found {len(seen_ads)} active ads")
     
-    # Get initial profiles
+    # Load existing profiles
     profiles = fetch_json(DEX_PROFILES_URL)
-    if isinstance(profiles, list):
+    if profiles and isinstance(profiles, list):
         for profile in profiles:
             chain_id = profile.get("chainId")
             token_address = profile.get("tokenAddress")
             if chain_id and token_address:
-                seen_profiles.add((chain_id, token_address))
-                known_tokens.add((chain_id, token_address))
-        print(f"✅ Found {len(seen_profiles)} token profiles")
+                key = (chain_id, token_address)
+                seen_profiles.add(key)
+                known_tokens.add(key)
+                
+                # Store high-resolution images from profile
+                # Priority: openGraph > header > icon
+                image_url = None
+                if profile.get("openGraph"):
+                    image_url = profile.get("openGraph")
+                elif profile.get("header"):
+                    image_url = profile.get("header")
+                elif profile.get("icon"):
+                    image_url = profile.get("icon")
+                
+                if image_url:
+                    profile_headers[key] = image_url
+                
+                # Store social links if available
+                if profile.get("links"):
+                    profile_socials[key] = profile.get("links")
+        print(f"✅ Found {len(profiles)} token profiles")
     
     # Get initial boosts
     boosts = fetch_json(DEX_BOOST_URL)
