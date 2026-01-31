@@ -381,6 +381,10 @@ def process_ads(ads: Any) -> None:
         if not chain_id or not token_address:
             continue
         
+        # Skip Solana chain alerts
+        if chain_id.lower() == "solana":
+            continue
+        
         # Track token for order checking
         known_tokens.add((chain_id, token_address))
         
@@ -424,6 +428,10 @@ def process_profiles(profiles: Any) -> None:
         token_address = profile.get("tokenAddress")
         
         if not chain_id or not token_address:
+            continue
+        
+        # Skip Solana chain alerts
+        if chain_id.lower() == "solana":
             continue
         
         key = (chain_id, token_address)
@@ -492,6 +500,10 @@ def process_boosts(boosts: Any) -> None:
         if not chain_id or not token_address or total_amount is None:
             continue
         
+        # Skip Solana chain alerts
+        if chain_id.lower() == "solana":
+            continue
+        
         # Track token for order checking
         key = (chain_id, token_address)
         known_tokens.add(key)
@@ -538,6 +550,10 @@ def check_orders() -> None:
     # For now, check orders for all known tokens
     # TODO: Need a way to discover new tokens with orders
     for chain_id, token_address in list(known_tokens):
+        # Skip Solana chain alerts
+        if chain_id.lower() == "solana":
+            continue
+            
         url = DEX_ORDERS_URL.format(chain_id=chain_id, token_address=token_address)
         data = fetch_json(url)
         
